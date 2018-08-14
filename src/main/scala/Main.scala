@@ -12,9 +12,8 @@ object Main extends App {
   implicit val actorSystem = ActorSystem("my-actor-system")
   implicit val dispatcher = actorSystem.dispatcher
 
-  implicit val materializer = ActorMaterializer()
 
-  val translation = actorSystem.actorOf(Props(classOf[TranslationActor], materializer), "translation")
+  val translation = actorSystem.actorOf(Props[TranslationActor], "translation")
 
   implicit val timeout = Timeout(3 seconds)
 
@@ -26,12 +25,15 @@ object Main extends App {
   } yield (t1, t2, t3)
 
   val programRes = Await.result(program, Duration.Inf)
-  println(programRes)
+  println(programRes._1)
+  println(programRes._2)
+  println(programRes._3)
 }
 
-class TranslationActor(implicit val materializer: ActorMaterializer) extends Actor with ActorLogging {
-  final implicit val system: ActorSystem = context.system
-  final implicit val ec = context.system.dispatcher
+class TranslationActor extends Actor with ActorLogging {
+  final implicit val system = context.system
+  final implicit val ec = system.dispatcher
+  final implicit val materializer = ActorMaterializer()
 
   def responseFuture(phrase: String): Future[HttpResponse] =
     Http()
