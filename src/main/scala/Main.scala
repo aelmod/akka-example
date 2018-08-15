@@ -1,4 +1,4 @@
-import akka.actor.{Actor, ActorLogging, ActorRef, ActorSystem, Props}
+import akka.actor.{Actor, ActorLogging, ActorPath, ActorRef, ActorSystem, Props}
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.model._
 import akka.pattern.{ask, pipe}
@@ -47,8 +47,6 @@ class TranslationActor extends Actor with ActorLogging {
 
   override def receive: Receive = {
     case s: String => {
-      println("phrase Received")
-      //      sender ! "huy sosi"
       responseFuture(s)
         .flatMap(_.entity.dataBytes.runFold(ByteString(""))(_ ++ _))
         .map(res => Right(res.decodeString("utf-8")))
@@ -68,6 +66,8 @@ class TranslationActor extends Actor with ActorLogging {
 }
 
 case class TranslatedEvent(phrase: String, translations: String)
+
+case class TranslateReceivedEvent(phrase: String, translations: String, sender: ActorPath)
 
 case class TranslateCommand(phrase: String)
 
@@ -94,19 +94,18 @@ class TranslationPersistentActor extends PersistentActor {
 
   override def receiveCommand: Receive = {
     case TranslateCommand(p) => {
-      println("TranslateCommand Received")
       val path = sender.path
       context.system.actorSelection("/user/" + Main.translationActor) ? p collect {
         case translations: Either[String, String] if translations.isRight => {
-          println("Received translation REo")
-          persist(TranslatedEvent(p, translations.right.get)) { event =>
-            println("Persisted 1")
-            updateState(event)
-            sender ! event
-            println("Persisted 2")
-          }
+          self ! TranslateReceivedEvent(p, translations.right.get, path)
         }
         case _ => println("vsya huinya")
+      }
+    }
+    case res: TranslateReceivedEvent => {
+      persist(TranslatedEvent(res.phrase, res.translations)) { event =>
+        updateState(event)
+        context.system.actorSelection(res.sender) ! state
       }
     }
   }
