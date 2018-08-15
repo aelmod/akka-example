@@ -1,33 +1,35 @@
-import akka.actor.{Actor, ActorLogging, ActorSystem, Props}
+import akka.actor.{Actor, ActorLogging, ActorRef, ActorSystem, Props}
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.model._
 import akka.pattern.{ask, pipe}
+import akka.persistence.PersistentActor
 import akka.stream.ActorMaterializer
 import akka.util.{ByteString, Timeout}
 
 import scala.concurrent.duration.{Duration, _}
 import scala.concurrent.{Await, Future}
 
+
 object Main extends App {
   implicit val actorSystem = ActorSystem("my-actor-system")
   implicit val dispatcher = actorSystem.dispatcher
 
-
-  val translation = actorSystem.actorOf(Props[TranslationActor], "translation")
+  val translationActor = "translation"
+  val translation = actorSystem.actorOf(Props[TranslationActor], translationActor)
 
   implicit val timeout = Timeout(3 seconds)
 
+  val translationPersistent: ActorRef = actorSystem.actorOf(Props[TranslationPersistentActor], "translation-persistent")
+
   val program = for {
-    t1 <- translation ? "I"
-    t2 <- translation ? "HZ"
-    t3 <- translation ? 123
+    t1 <- translationPersistent ? TranslateCommand("I")
+    t2 <- translationPersistent ? TranslateCommand("HZ")
     _ <- actorSystem.terminate()
-  } yield (t1, t2, t3)
+  } yield (t1, t2)
 
   val programRes = Await.result(program, Duration.Inf)
   println(programRes._1)
   println(programRes._2)
-  println(programRes._3)
 }
 
 class TranslationActor extends Actor with ActorLogging {
@@ -44,16 +46,70 @@ class TranslationActor extends Actor with ActorLogging {
       ))
 
   override def receive: Receive = {
-    case s: String =>
+    case s: String => {
+      println("phrase Received")
+      //      sender ! "huy sosi"
       responseFuture(s)
         .flatMap(_.entity.dataBytes.runFold(ByteString(""))(_ ++ _))
         .map(res => Right(res.decodeString("utf-8")))
         .recover({
           case t: Throwable => Left(t.getMessage)
         })
+        .map(r => {
+          println(r)
+          r
+        })
         .pipeTo(sender)
+    }
 
     case any =>
       sender ! Left(any.getClass.getName -> "ERROR")
   }
+}
+
+case class TranslatedEvent(phrase: String, translations: String)
+
+case class TranslateCommand(phrase: String)
+
+case class ExampleState(events: List[String] = Nil) {
+  def updated(evt: TranslatedEvent): ExampleState = copy(evt.phrase :: events)
+
+  def size: Int = events.length
+
+  override def toString: String = events.reverse.toString
+}
+
+class TranslationPersistentActor extends PersistentActor {
+  final implicit val ec = context.dispatcher
+  var state = ExampleState()
+
+  def updateState(event: TranslatedEvent): Unit =
+    state = state.updated(event)
+
+  override def receiveRecover: Receive = {
+    case e: TranslatedEvent => updateState(e)
+  }
+
+  implicit val timeout = Timeout(10 seconds)
+
+  override def receiveCommand: Receive = {
+    case TranslateCommand(p) => {
+      println("TranslateCommand Received")
+      val path = sender.path
+      context.system.actorSelection("/user/" + Main.translationActor) ? p collect {
+        case translations: Either[String, String] if translations.isRight => {
+          println("Received translation REo")
+          persist(TranslatedEvent(p, translations.right.get)) { event =>
+            println("Persisted 1")
+            updateState(event)
+            sender ! event
+            println("Persisted 2")
+          }
+        }
+        case _ => println("vsya huinya")
+      }
+    }
+  }
+
+  override def persistenceId: String = "translator-1"
 }
